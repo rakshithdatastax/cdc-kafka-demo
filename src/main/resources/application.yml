@@ -1,0 +1,17 @@
+server:
+  port: 8090
+
+demo:
+  cassandra:
+    contact-point: localhost
+    port: 9042
+    local-datacenter: dc1
+    keyspace: ks1
+    table: table1
+    username: ${CASSANDRA_USERNAME:dev-cassandra-superuser}
+    password: ${CASSANDRA_PASSWORD}
+  kafka:
+    bootstrap-servers: dev-kafka-0.dev-kafka.kafka.svc.cluster.local:9092,dev-kafka-1.dev-kafka.kafka.svc.cluster.local:9092,dev-kafka-2.dev-kafka.kafka.svc.cluster.local:9092
+    schema-registry-url: http://localhost:8080/apis/ccompat/v7
+    events-topic: events-ks1.table1
+    data-topic: data-ks1.table1
