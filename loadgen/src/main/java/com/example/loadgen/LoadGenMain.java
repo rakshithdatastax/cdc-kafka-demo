@@ -93,6 +93,7 @@ public class LoadGenMain {
         private final Config config;
         private final List<String> columnNames = new ArrayList<>();
         private final int[] updateCounts;
+        private final int[][] columnValues;
         private final boolean[] deleted;
         private final Random random = ThreadLocalRandom.current();
 
@@ -110,6 +111,7 @@ public class LoadGenMain {
             this.session = session;
             this.config = config;
             this.updateCounts = new int[config.numPks];
+            this.columnValues = new int[config.numPks][config.numColumns + config.maxAlters];
             this.deleted = new boolean[config.numPks];
             this.liveCount = config.numPks;
             for (int i = 0; i < config.numColumns; i++) {
@@ -142,7 +144,7 @@ public class LoadGenMain {
 
             for (String col : columnNames) {
                 updateStmtByColumn.add(session.prepare(
-                        "UPDATE " + qualifiedTable + " SET " + col + " = " + col + " + 1 WHERE id = ?"));
+                        "UPDATE " + qualifiedTable + " SET " + col + " = ? WHERE id = ?"));
             }
 
             System.out.println("[loadgen] inserting " + config.numPks + " rows into " + qualifiedTable + "...");
@@ -199,7 +201,8 @@ public class LoadGenMain {
                 return;
             }
             int columnIndex = updateCounts[pk] % columnNames.size();
-            session.execute(updateStmtByColumn.get(columnIndex).bind(pkFor(pk)));
+            int newValue = ++columnValues[pk][columnIndex];
+            session.execute(updateStmtByColumn.get(columnIndex).bind(newValue, pkFor(pk)));
             updateCounts[pk]++;
             totalUpdates++;
         }
@@ -208,8 +211,7 @@ public class LoadGenMain {
             String newColumn = "extra_" + (totalAlters + 1);
             session.execute("ALTER TABLE " + config.keyspace + "." + config.table + " ADD " + newColumn + " int");
             updateStmtByColumn.add(session.prepare(
-                    "UPDATE " + config.keyspace + "." + config.table + " SET " + newColumn + " = " + newColumn
-                            + " + 1 WHERE id = ?"));
+                    "UPDATE " + config.keyspace + "." + config.table + " SET " + newColumn + " = ? WHERE id = ?"));
             columnNames.add(newColumn);
             totalAlters++;
             System.out.println("[loadgen] schema evolution: added column " + newColumn);
