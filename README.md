@@ -108,3 +108,70 @@ through the normal per-row mutation path, so it produces **no** CDC events —
 truncating. There's no way to clear individual messages out of a Kafka topic
 short of deleting and recreating it, which this app doesn't do since that
 topic is shared infrastructure, not owned by this demo.
+
+## Load generator (`loadgen/`)
+
+Implements "DSE CDC Kafka Support Alpha Test Cases" functional Case 1 (100
+ups over N distinct PKs, scatter mutation on each column indexed at
+logical-clock % num_columns) and Case 2 (schema evolution mid-run), extended
+with periodic deletes so one run exercises inserts, alters, and deletes
+together. Plain Java, no Spring — it only talks CQL — packaged as its own
+container image and run as a pod in the cluster (not locally), continuously
+generating load against `dev-cassandra` while the Spring Boot app above
+observes it.
+
+**One-time setup**: add these two secrets to this repo on GitHub (Settings →
+Secrets and variables → Actions) — the same `AWS_ACCESS_KEY_ID` /
+`AWS_SECRET_ACCESS_KEY` used by `cdc-apache-cassandra`'s own release
+workflow, since they push to the same ECR repo:
+- `AWS_ACCESS_KEY_ID`
+- `AWS_SECRET_ACCESS_KEY`
+
+**Build & push**: `.github/workflows/build-loadgen.yaml` builds and pushes
+`765730767431.dkr.ecr.us-east-2.amazonaws.com/datastax/cdc:loadgen` on every
+push to `main` that touches `loadgen/**`, or manually via the Actions tab
+("Run workflow"). No local docker/podman push needed.
+
+**Deploy**: a proper ArgoCD-managed Helm release in `streaming-dataplane-argocd`
+(`releases/loadgen/dev/`, registered in that repo's `templated-apps` and root
+`values.yaml` under the `cassandra` group, alongside `admin-pod`/`perf-test`)
+— not deployed from this repo. ArgoCD syncs it automatically once that repo's
+change is committed/pushed; see that repo for how to adjust its values
+(`NUM_PKS`, `TARGET_UPS`, etc. — defaults there are gentler than the alpha
+test doc's exact Case 1 numbers of 10,000 PKs / 100 ups, since it runs
+against the shared dev cluster) or force a manual sync.
+
+It writes to `ks1.loadgen` (separate from `ks1.table1` above), evolves the
+schema by adding `extra_1`/`extra_2`/`extra_3` every `ALTER_INTERVAL_SECONDS`
+(up to `MAX_ALTERS`), and deletes `DELETES_PER_INTERVAL` random live rows
+every `DELETE_INTERVAL_SECONDS` (stopping once live rows drop below
+`MIN_LIVE_FRACTION` of `NUM_PKS`).
+
+## Consumer + validation layer
+
+While the Spring Boot app is running (`./run.sh`), it maintains an in-memory
+`hashmap<pk, row>` in the background by continuously consuming
+`data-ks1.loadgen` — the doc's Case 1 "Kafka Consumer... update in-memory
+hash map" requirement — independent of whether you've hit any other
+endpoint.
+
+```bash
+# Cheap, poll-friendly: hashmap size + whether it's still receiving messages
+curl localhost:8090/demo/loadgen/status
+
+# Full diff against a live SELECT * ks1.loadgen -- the doc's "verify the
+# consumer hashmap is eventually consistent" / "verify Cassandra table and
+# consumer hashmap are identical" checks. Does a full table scan; use this
+# at the end of a run, not every second.
+curl localhost:8090/demo/loadgen/validate
+```
+
+`/demo/loadgen/validate` reports `dbRowCount`, `hashmapRowCount`,
+`missingInHashmap` (in Cassandra but not yet consumed), `extraInHashmap`
+(consumed but no longer in Cassandra — usually a deleted row not yet
+reflected, or backlog), `mismatchedRows` (present on both sides with
+different values, with the actual diff), and `identical: true/false`. A
+column added by a mid-run `ALTER TABLE` existing in Cassandra before the
+consumer has decoded a record carrying it isn't counted as a mismatch —
+only columns present on both sides are compared, per the "eventually
+consistent" framing in the doc rather than "instantaneously consistent".

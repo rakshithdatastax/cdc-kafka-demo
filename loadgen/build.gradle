@@ -1,0 +1,27 @@
+plugins {
+    id 'java'
+    id 'com.github.johnrengelman.shadow' version '8.1.1'
+}
+
+repositories {
+    mavenCentral()
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17)
+    }
+}
+
+dependencies {
+    implementation "com.datastax.oss:java-driver-core:4.17.0"
+}
+
+shadowJar {
+    archiveBaseName = 'loadgen'
+    archiveClassifier = ''
+    archiveVersion = ''
+    manifest {
+        attributes 'Main-Class': 'com.example.loadgen.LoadGenMain'
+    }
+}

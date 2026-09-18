@@ -15,3 +15,7 @@ demo:
     schema-registry-url: http://localhost:8080/apis/ccompat/v7
     events-topic: events-ks1.table1
     data-topic: data-ks1.table1
+  loadgen:
+    keyspace: ks1
+    table: loadgen
+    data-topic: data-ks1.loadgen
