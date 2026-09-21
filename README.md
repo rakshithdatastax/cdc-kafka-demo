@@ -145,7 +145,14 @@ It writes to `ks1.loadgen` (separate from `ks1.table1` above), evolves the
 schema by adding `extra_1`/`extra_2`/`extra_3` every `ALTER_INTERVAL_SECONDS`
 (up to `MAX_ALTERS`), and deletes `DELETES_PER_INTERVAL` random live rows
 every `DELETE_INTERVAL_SECONDS` (stopping once live rows drop below
-`MIN_LIVE_FRACTION` of `NUM_PKS`).
+`MIN_LIVE_FRACTION` of `NUM_PKS`). Every `REINSERT_INTERVAL_SECONDS` (while
+any PK is currently deleted), it also brings one deleted PK back with a
+brand-new row — `REINSERTS_PER_INTERVAL` at a time — exercising the CDC path
+for a tombstone followed by a fresh insert on the same key. The new row's
+columns start at a baseline (1000, 2000, ... one generation-multiple per
+reinsert of that PK) guaranteed well outside the range the deleted row's
+values ever reached through ordinary scatter updates, so it's unambiguously
+a new row through CDC, not a coincidental repeat of old values.
 
 ## Consumer + validation layer
 
@@ -156,13 +163,8 @@ hash map" requirement — independent of whether you've hit any other
 endpoint.
 
 ```bash
-# Cheap, poll-friendly: hashmap size + whether it's still receiving messages
 curl localhost:8090/demo/loadgen/status
 
-# Full diff against a live SELECT * ks1.loadgen -- the doc's "verify the
-# consumer hashmap is eventually consistent" / "verify Cassandra table and
-# consumer hashmap are identical" checks. Does a full table scan; use this
-# at the end of a run, not every second.
 curl localhost:8090/demo/loadgen/validate
 ```
 

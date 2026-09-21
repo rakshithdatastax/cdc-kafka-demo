@@ -45,6 +45,8 @@ public class LoadGenMain {
         int deleteIntervalSeconds;
         int deletesPerInterval;
         double minLiveFraction;
+        int reinsertIntervalSeconds;
+        int reinsertsPerInterval;
 
         static Config fromEnv() {
             Config c = new Config();
@@ -63,15 +65,19 @@ public class LoadGenMain {
             c.deleteIntervalSeconds = Integer.parseInt(env("DELETE_INTERVAL_SECONDS", "30"));
             c.deletesPerInterval = Integer.parseInt(env("DELETES_PER_INTERVAL", "1"));
             c.minLiveFraction = Double.parseDouble(env("MIN_LIVE_FRACTION", "0.5"));
+            c.reinsertIntervalSeconds = Integer.parseInt(env("REINSERT_INTERVAL_SECONDS", "45"));
+            c.reinsertsPerInterval = Integer.parseInt(env("REINSERTS_PER_INTERVAL", "1"));
             return c;
         }
 
         void print() {
             System.out.printf(
                     "[loadgen] contactPoint=%s:%d localDc=%s keyspace=%s table=%s numPks=%d targetUps=%.1f "
-                            + "numColumns=%d alterEvery=%ds(max %d) deleteEvery=%ds(x%d, floor=%.0f%%)%n",
+                            + "numColumns=%d alterEvery=%ds(max %d) deleteEvery=%ds(x%d, floor=%.0f%%) "
+                            + "reinsertEvery=%ds(x%d)%n",
                     contactPoint, port, localDc, keyspace, table, numPks, targetUps, numColumns,
-                    alterIntervalSeconds, maxAlters, deleteIntervalSeconds, deletesPerInterval, minLiveFraction * 100);
+                    alterIntervalSeconds, maxAlters, deleteIntervalSeconds, deletesPerInterval, minLiveFraction * 100,
+                    reinsertIntervalSeconds, reinsertsPerInterval);
         }
 
         private static String env(String name, String def) {
@@ -95,6 +101,7 @@ public class LoadGenMain {
         private final int[] updateCounts;
         private final int[][] columnValues;
         private final boolean[] deleted;
+        private final int[] generation;
         private final Random random = ThreadLocalRandom.current();
 
         private PreparedStatement insertStmt;
@@ -105,6 +112,7 @@ public class LoadGenMain {
         private long totalUpdates;
         private long totalAlters;
         private long totalDeletes;
+        private long totalReinserts;
         private int liveCount;
 
         LoadGen(CqlSession session, Config config) {
@@ -113,6 +121,7 @@ public class LoadGenMain {
             this.updateCounts = new int[config.numPks];
             this.columnValues = new int[config.numPks][config.numColumns + config.maxAlters];
             this.deleted = new boolean[config.numPks];
+            this.generation = new int[config.numPks];
             this.liveCount = config.numPks;
             for (int i = 0; i < config.numColumns; i++) {
                 columnNames.add("c" + i);
@@ -160,6 +169,7 @@ public class LoadGenMain {
             long nextTick = System.nanoTime();
             long nextAlterAt = System.currentTimeMillis() + config.alterIntervalSeconds * 1000L;
             long nextDeleteAt = System.currentTimeMillis() + config.deleteIntervalSeconds * 1000L;
+            long nextReinsertAt = System.currentTimeMillis() + config.reinsertIntervalSeconds * 1000L;
             long nextLogAt = System.currentTimeMillis() + 10_000L;
             long opsSinceLastLog = 0;
 
@@ -176,11 +186,15 @@ public class LoadGenMain {
                     doDeletes();
                     nextDeleteAt = now + config.deleteIntervalSeconds * 1000L;
                 }
+                if (liveCount < config.numPks && now >= nextReinsertAt) {
+                    doReinserts();
+                    nextReinsertAt = now + config.reinsertIntervalSeconds * 1000L;
+                }
                 if (now >= nextLogAt) {
                     double actualUps = opsSinceLastLog / 10.0;
-                    System.out.printf("[loadgen] %s inserts=%d updates=%d alters=%d deletes=%d live=%d columns=%d actualUps=%.1f%n",
-                            Instant.now(), totalInserts, totalUpdates, totalAlters, totalDeletes, liveCount,
-                            columnNames.size(), actualUps);
+                    System.out.printf("[loadgen] %s inserts=%d updates=%d alters=%d deletes=%d reinserts=%d live=%d columns=%d actualUps=%.1f%n",
+                            Instant.now(), totalInserts, totalUpdates, totalAlters, totalDeletes, totalReinserts,
+                            liveCount, columnNames.size(), actualUps);
                     opsSinceLastLog = 0;
                     nextLogAt = now + 10_000L;
                 }
@@ -228,6 +242,51 @@ public class LoadGenMain {
                 liveCount--;
                 totalDeletes++;
             }
+        }
+
+        private void doReinserts() {
+            for (int i = 0; i < config.reinsertsPerInterval; i++) {
+                int pk = pickDeletedPk();
+                if (pk < 0) {
+                    return;
+                }
+                generation[pk]++;
+                int baseValue = generation[pk] * 1000;
+
+                StringBuilder insertCql = new StringBuilder(
+                        "INSERT INTO " + config.keyspace + "." + config.table + " (id");
+                StringBuilder values = new StringBuilder("'" + pkFor(pk) + "'");
+                for (int col = 0; col < columnNames.size(); col++) {
+                    insertCql.append(", ").append(columnNames.get(col));
+                    values.append(", ").append(baseValue);
+                    columnValues[pk][col] = baseValue;
+                }
+                insertCql.append(") VALUES (").append(values).append(")");
+                session.execute(insertCql.toString());
+
+                updateCounts[pk] = 0;
+                deleted[pk] = false;
+                liveCount++;
+                totalReinserts++;
+            }
+        }
+
+        private int pickDeletedPk() {
+            if (liveCount >= config.numPks) {
+                return -1;
+            }
+            for (int attempt = 0; attempt < 100; attempt++) {
+                int candidate = random.nextInt(config.numPks);
+                if (deleted[candidate]) {
+                    return candidate;
+                }
+            }
+            for (int i = 0; i < config.numPks; i++) {
+                if (deleted[i]) {
+                    return i;
+                }
+            }
+            return -1;
         }
 
         private int pickLivePk() {
