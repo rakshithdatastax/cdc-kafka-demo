@@ -3,10 +3,12 @@ package com.example.loadgen;
 import com.datastax.oss.driver.api.core.CqlSession;
 import com.datastax.oss.driver.api.core.auth.ProgrammaticPlainTextAuthProvider;
 import com.datastax.oss.driver.api.core.cql.PreparedStatement;
+import com.datastax.oss.driver.api.core.metadata.schema.ColumnMetadata;
 
 import java.net.InetSocketAddress;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Random;
 import java.util.concurrent.ThreadLocalRandom;
@@ -151,6 +153,8 @@ public class LoadGenMain {
 
             deleteStmt = session.prepare("DELETE FROM " + qualifiedTable + " WHERE id = ?");
 
+            discoverExistingAlterColumns(qualifiedTable);
+
             for (String col : columnNames) {
                 updateStmtByColumn.add(session.prepare(
                         "UPDATE " + qualifiedTable + " SET " + col + " = ? WHERE id = ?"));
@@ -162,6 +166,30 @@ public class LoadGenMain {
                 totalInserts++;
             }
             System.out.println("[loadgen] initial insert complete: " + totalInserts + " rows");
+        }
+
+        private void discoverExistingAlterColumns(String qualifiedTable) {
+            var tableMeta = session.getMetadata()
+                    .getKeyspace(config.keyspace)
+                    .flatMap(ks -> ks.getTable(config.table));
+            if (tableMeta.isEmpty()) {
+                return;
+            }
+            List<String> existingExtras = new ArrayList<>();
+            for (ColumnMetadata col : tableMeta.get().getColumns().values()) {
+                String name = col.getName().asInternal();
+                if (name.startsWith("extra_")) {
+                    existingExtras.add(name);
+                }
+            }
+            existingExtras.sort(Comparator.comparingInt(name -> Integer.parseInt(name.substring("extra_".length()))));
+            columnNames.addAll(existingExtras);
+            totalAlters = existingExtras.size();
+            if (totalAlters > 0) {
+                System.out.println("[loadgen] found " + totalAlters
+                        + " pre-existing schema-evolution column(s) from a prior run on " + qualifiedTable
+                        + ": " + existingExtras);
+            }
         }
 
         void run() throws InterruptedException {
