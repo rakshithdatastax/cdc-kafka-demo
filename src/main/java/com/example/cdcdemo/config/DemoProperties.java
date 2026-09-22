@@ -17,6 +17,9 @@ public class DemoProperties {
     @NestedConfigurationProperty
     private Loadgen loadgen = new Loadgen();
 
+    @NestedConfigurationProperty
+    private Backfill backfill = new Backfill();
+
     @Data
     public static class Cassandra {
         private String contactPoint;
@@ -40,6 +43,12 @@ public class DemoProperties {
     // own dedicated table (see k8s/loadgen.yaml), not the demo's own ks1.table1.
     @Data
     public static class Loadgen {
+        private String keyspace;
+        private String table;
+        private String dataTopic;
+    }
+    @Data
+    public static class Backfill {
         private String keyspace;
         private String table;
         private String dataTopic;
