@@ -3,7 +3,7 @@ name: Build and push loadgen image
 on:
   push:
     branches:
-      - test_backfill
+      - main
     paths:
       - 'loadgen/**'
       - '.github/workflows/build-loadgen.yaml'
