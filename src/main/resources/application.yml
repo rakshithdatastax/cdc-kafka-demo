@@ -19,7 +19,3 @@ demo:
     keyspace: ks1
     table: loadgen
     data-topic: data-ks1.loadgen
-  backfill:
-    keyspace: ks1
-    table: backfill_demo
-    data-topic: data-ks1.backfill_demo
