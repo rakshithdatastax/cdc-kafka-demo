@@ -3,6 +3,8 @@ package com.example.cdcdemo.controller;
 import com.example.cdcdemo.config.DemoProperties;
 import com.example.cdcdemo.service.CassandraDemoService;
 import com.example.cdcdemo.service.KafkaMessageService;
+import com.example.cdcdemo.service.Table1ConsumerService;
+import com.example.cdcdemo.service.Table1ValidationService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
 
@@ -16,6 +18,8 @@ public class DemoController {
 
     private final CassandraDemoService cassandraDemoService;
     private final KafkaMessageService kafkaMessageService;
+    private final Table1ConsumerService table1ConsumerService;
+    private final Table1ValidationService table1ValidationService;
     private final DemoProperties props;
 
     @PostMapping("/create-table")
@@ -79,5 +83,15 @@ public class DemoController {
     @GetMapping("/kafka/data")
     public List<Map<String, Object>> readDataTopic() {
         return kafkaMessageService.readAllMessages(props.getKafka().getDataTopic(), true);
+    }
+
+    @GetMapping("/table1/status")
+    public Map<String, Object> table1Status() {
+        return table1ConsumerService.status();
+    }
+
+    @GetMapping("/table1/validate")
+    public Map<String, Object> table1Validate() {
+        return table1ValidationService.validate();
     }
 }
