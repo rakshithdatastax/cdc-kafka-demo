@@ -2,7 +2,10 @@ package com.example.cdcdemo.controller;
 
 import com.example.cdcdemo.config.DemoProperties;
 import com.example.cdcdemo.service.CassandraDemoService;
+import com.example.cdcdemo.service.CompareService;
 import com.example.cdcdemo.service.KafkaMessageService;
+import com.example.cdcdemo.service.LoadGenUiService;
+import com.example.cdcdemo.service.SchemaEvolutionService;
 import com.example.cdcdemo.service.Table1ConsumerService;
 import com.example.cdcdemo.service.Table1ValidationService;
 import lombok.RequiredArgsConstructor;
@@ -20,6 +23,9 @@ public class DemoController {
     private final KafkaMessageService kafkaMessageService;
     private final Table1ConsumerService table1ConsumerService;
     private final Table1ValidationService table1ValidationService;
+    private final LoadGenUiService loadGenUiService;
+    private final SchemaEvolutionService schemaEvolutionService;
+    private final CompareService compareService;
     private final DemoProperties props;
 
     @PostMapping("/create-table")
@@ -93,5 +99,46 @@ public class DemoController {
     @GetMapping("/table1/validate")
     public Map<String, Object> table1Validate() {
         return table1ValidationService.validate();
+    }
+
+    // --- Loadgen-style dummy data generation, triggerable from the UI ---
+
+    @PostMapping("/loadgen-ui/seed")
+    public Map<String, Object> loadGenSeed(@RequestParam(defaultValue = "10") int count) {
+        return loadGenUiService.seed(count);
+    }
+
+    @PostMapping("/loadgen-ui/update")
+    public Map<String, Object> loadGenUpdate(@RequestParam(defaultValue = "5") int count) {
+        return loadGenUiService.scatterUpdate(count);
+    }
+
+    @PostMapping("/loadgen-ui/delete")
+    public Map<String, Object> loadGenDelete(@RequestParam(defaultValue = "1") int count) {
+        return loadGenUiService.deleteRandom(count);
+    }
+
+    @PostMapping("/loadgen-ui/evolve-schema")
+    public Map<String, Object> loadGenEvolveSchema() {
+        return loadGenUiService.evolveSchema();
+    }
+
+    // --- Schema evolution, Cassandra vs. Kafka schema registry ---
+
+    @GetMapping("/schema-evolution")
+    public Map<String, Object> schemaEvolution() throws Exception {
+        return schemaEvolutionService.current();
+    }
+
+    // --- Live Cassandra vs. OpenSearch comparison ---
+
+    @GetMapping("/compare/{id}")
+    public Map<String, Object> compareOne(@PathVariable String id) throws Exception {
+        return compareService.compareOne(id);
+    }
+
+    @GetMapping("/compare")
+    public Map<String, Object> compareAll() throws Exception {
+        return compareService.compareAll();
     }
 }

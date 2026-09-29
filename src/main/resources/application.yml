@@ -19,3 +19,6 @@ demo:
     keyspace: ks1
     table: loadgen
     data-topic: data-ks1.loadgen
+  open-search:
+    url: http://localhost:9200
+    index: ks1-table1

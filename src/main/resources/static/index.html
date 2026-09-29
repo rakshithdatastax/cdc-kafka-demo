@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>CDC Kafka Demo</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --border: #2a2f3a; --text: #e6e8eb;
+    --muted: #8b93a1; --accent: #5b9dff; --good: #3ecf8e; --bad: #ff6b6b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg); color: var(--text); padding: 24px;
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .subtitle { color: var(--muted); margin: 0 0 24px; font-size: 13px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; max-width: 1200px; }
+  .panel {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 16px; min-width: 0;
+  }
+  .panel.wide { grid-column: 1 / -1; }
+  .panel h2 { font-size: 14px; margin: 0 0 12px; color: var(--accent); }
+  button {
+    background: #232733; color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 12px; cursor: pointer; font-size: 13px; margin: 0 6px 6px 0;
+  }
+  button:hover { background: #2c3140; }
+  input[type=number], input[type=text] {
+    background: #0f1115; color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 5px 8px; width: 70px; font-size: 13px;
+  }
+  input[type=text] { width: 160px; }
+  .row { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; }
+  table { border-collapse: collapse; width: 100%; font-size: 12px; margin-top: 8px; }
+  th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; }
+  pre {
+    background: #0f1115; border: 1px solid var(--border); border-radius: 6px;
+    padding: 10px; font-size: 11px; overflow: auto; max-height: 260px; margin: 8px 0 0;
+  }
+  .status-ok { color: var(--good); font-weight: 600; }
+  .status-bad { color: var(--bad); font-weight: 600; }
+  .muted { color: var(--muted); font-size: 12px; }
+  label.toggle { display: flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
+</style>
+</head>
+<body>
+
+<h1>CDC Kafka Demo</h1>
+<p class="subtitle">ks1.table1 &middot; Cassandra &rarr; Kafka (CDC) &rarr; OpenSearch</p>
+
+<div class="grid">
+
+  <div class="panel">
+    <h2>Generate data (loadgen-style)</h2>
+    <div class="row">
+      <span>Insert</span>
+      <input type="number" id="seedCount" value="10" min="1">
+      <button onclick="callAction('/demo/loadgen-ui/seed', 'seedCount')">Seed rows</button>
+    </div>
+    <div class="row">
+      <span>Update</span>
+      <input type="number" id="updateCount" value="5" min="1">
+      <button onclick="callAction('/demo/loadgen-ui/update', 'updateCount')">Scatter update</button>
+    </div>
+    <div class="row">
+      <span>Delete</span>
+      <input type="number" id="deleteCount" value="1" min="1">
+      <button onclick="callAction('/demo/loadgen-ui/delete', 'deleteCount')">Random delete</button>
+    </div>
+    <div class="row">
+      <button onclick="callSimple('/demo/loadgen-ui/evolve-schema')">Evolve schema (ALTER TABLE)</button>
+    </div>
+    <pre id="actionResult">Actions will show their result here.</pre>
+  </div>
+
+  <div class="panel">
+    <h2>Live consumer status</h2>
+    <div class="row">
+      <button onclick="refreshStatus()">Refresh</button>
+      <label class="toggle"><input type="checkbox" id="autoStatus" onchange="toggleAuto('autoStatus', refreshStatus, 3000)"> auto-refresh</label>
+    </div>
+    <pre id="statusResult">Click refresh.</pre>
+  </div>
+
+  <div class="panel wide">
+    <h2>Schema evolution &mdash; Cassandra vs. Kafka schema registry</h2>
+    <div class="row">
+      <button onclick="refreshSchema()">Refresh</button>
+    </div>
+    <div class="grid" style="grid-template-columns: 1fr 1fr;">
+      <div>
+        <div class="muted">Cassandra live columns</div>
+        <table id="cassandraSchemaTable"><thead><tr><th>Column</th><th>Type</th></tr></thead><tbody></tbody></table>
+      </div>
+      <div>
+        <div class="muted">Schema registry versions (data topic)</div>
+        <table id="kafkaSchemaTable"><thead><tr><th>Version</th><th>Schema ID</th><th>Fields</th></tr></thead><tbody></tbody></table>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel wide">
+    <h2>Real-time compare &mdash; Cassandra vs. OpenSearch</h2>
+    <div class="row">
+      <input type="text" id="compareId" placeholder="row id, e.g. ui-...-0">
+      <button onclick="compareOne()">Compare row</button>
+      <button onclick="compareAll()">Compare all rows</button>
+      <label class="toggle"><input type="checkbox" id="autoCompare" onchange="toggleAuto('autoCompare', compareAll, 3000)"> auto-refresh (all)</label>
+    </div>
+    <pre id="compareResult">Results will show here.</pre>
+  </div>
+
+</div>
+
+<script>
+const timers = {};
+
+async function postJson(url) {
+  const res = await fetch(url, { method: 'POST' });
+  return res.json();
+}
+async function getJson(url) {
+  const res = await fetch(url);
+  return res.json();
+}
+
+async function callAction(path, countInputId) {
+  const count = document.getElementById(countInputId).value;
+  const result = await postJson(`${path}?count=${count}`);
+  document.getElementById('actionResult').textContent = JSON.stringify(result, null, 2);
+}
+async function callSimple(path) {
+  const result = await postJson(path);
+  document.getElementById('actionResult').textContent = JSON.stringify(result, null, 2);
+}
+
+async function refreshStatus() {
+  const status = await getJson('/demo/table1/status');
+  const validate = await getJson('/demo/table1/validate');
+  document.getElementById('statusResult').textContent =
+    JSON.stringify({ consumer: status, validate }, null, 2);
+}
+
+async function refreshSchema() {
+  const data = await getJson('/demo/schema-evolution');
+  const cBody = document.querySelector('#cassandraSchemaTable tbody');
+  cBody.innerHTML = '';
+  (data.cassandra.columns || []).forEach(col => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${col.name}</td><td>${col.type}</td>`;
+    cBody.appendChild(tr);
+  });
+
+  const kBody = document.querySelector('#kafkaSchemaTable tbody');
+  kBody.innerHTML = '';
+  (data.kafka.versions || []).forEach(v => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${v.version}</td><td>${v.schemaId}</td><td>${(v.fields || []).join(', ')}</td>`;
+    kBody.appendChild(tr);
+  });
+}
+
+async function compareOne() {
+  const id = document.getElementById('compareId').value.trim();
+  if (!id) return;
+  const result = await getJson(`/demo/compare/${encodeURIComponent(id)}`);
+  renderCompare(result, true);
+}
+
+async function compareAll() {
+  const result = await getJson('/demo/compare');
+  renderCompare(result, false);
+}
+
+function renderCompare(result, single) {
+  const el = document.getElementById('compareResult');
+  const identical = result.identical;
+  const badge = identical
+    ? '<span class="status-ok">IDENTICAL</span>'
+    : '<span class="status-bad">MISMATCH</span>';
+  el.innerHTML = badge + '\n' + JSON.stringify(result, null, 2);
+}
+
+function toggleAuto(checkboxId, fn, intervalMs) {
+  const checked = document.getElementById(checkboxId).checked;
+  if (timers[checkboxId]) {
+    clearInterval(timers[checkboxId]);
+    delete timers[checkboxId];
+  }
+  if (checked) {
+    fn();
+    timers[checkboxId] = setInterval(fn, intervalMs);
+  }
+}
+
+refreshStatus();
+refreshSchema();
+</script>
+
+</body>
+</html>

@@ -17,6 +17,9 @@ public class DemoProperties {
     @NestedConfigurationProperty
     private Loadgen loadgen = new Loadgen();
 
+    @NestedConfigurationProperty
+    private OpenSearch openSearch = new OpenSearch();
+
     @Data
     public static class Cassandra {
         private String contactPoint;
@@ -43,5 +46,11 @@ public class DemoProperties {
         private String keyspace;
         private String table;
         private String dataTopic;
+    }
+
+    @Data
+    public static class OpenSearch {
+        private String url;
+        private String index;
     }
 }
