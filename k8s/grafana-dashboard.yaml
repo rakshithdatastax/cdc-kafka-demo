@@ -1,0 +1,226 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cdc-pipeline-health-dashboard
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+data:
+  cdc-pipeline-health.json: |
+    {
+      "title": "CDC for Cassandra -- E2E Pipeline Health",
+      "uid": "cdc-pipeline-health",
+      "tags": [
+        "cdc",
+        "kafka",
+        "cassandra"
+      ],
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "version": 1,
+      "refresh": "10s",
+      "time": {
+        "from": "now-30m",
+        "to": "now"
+      },
+      "templating": {
+        "list": [
+          {
+            "name": "datasource",
+            "type": "datasource",
+            "query": "prometheus",
+            "current": {}
+          }
+        ]
+      },
+      "panels": [
+        {
+          "id": 1,
+          "title": "OpenSearch sink consumer lag (data-ks1.loadgen)",
+          "description": "The primary backlog signal from the alpha test doc's Case 0: messages produced to the data topic that the OpenSearch sink hasn't consumed yet. Should stay flat near zero in a non-saturating happy path; a sustained upward trend means the sink (or something upstream of it) can't keep up.",
+          "type": "timeseries",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "$datasource"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 24,
+            "x": 0,
+            "y": 0
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 15,
+                "lineWidth": 2
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "yellow",
+                    "value": 1000
+                  },
+                  {
+                    "color": "red",
+                    "value": 10000
+                  }
+                ]
+              }
+            }
+          },
+          "targets": [
+            {
+              "expr": "sum(kminion_kafka_consumer_group_topic_lag{topic_name=\"data-ks1.loadgen\"}) by (group_id)",
+              "legendFormat": "{{group_id}}"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "title": "Current backlog (data topic)",
+          "description": "Single-number snapshot of the same lag, for an at-a-glance happy-path check.",
+          "type": "stat",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "$datasource"
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 6,
+            "x": 0,
+            "y": 8
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "yellow",
+                    "value": 1000
+                  },
+                  {
+                    "color": "red",
+                    "value": 10000
+                  }
+                ]
+              }
+            }
+          },
+          "targets": [
+            {
+              "expr": "sum(kminion_kafka_consumer_group_topic_lag{topic_name=\"data-ks1.loadgen\"})"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "title": "Raw mutation rate (events topic, msgs/s)",
+          "description": "Rate the CDC Change Agents are publishing raw (pre-dedup) mutation pointers. Includes replica duplicates by design -- this is Cassandra's write rate as seen before the connector's dedup step.",
+          "type": "timeseries",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "$datasource"
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 9,
+            "x": 6,
+            "y": 8
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ops",
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 2
+              }
+            }
+          },
+          "targets": [
+            {
+              "expr": "sum(rate(kminion_kafka_topic_partition_high_water_mark{topic_name=\"events-ks1.loadgen\"}[1m]))",
+              "legendFormat": "events topic"
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "title": "Deduped write rate (data topic, msgs/s)",
+          "description": "Rate the CDC Source Connector is producing deduplicated, Avro-encoded changes to the data topic -- this is what downstream consumers (incl. the OpenSearch sink) actually see.",
+          "type": "timeseries",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "$datasource"
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 9,
+            "x": 15,
+            "y": 8
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ops",
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 2
+              }
+            }
+          },
+          "targets": [
+            {
+              "expr": "sum(rate(kminion_kafka_topic_partition_high_water_mark{topic_name=\"data-ks1.loadgen\"}[1m]))",
+              "legendFormat": "data topic"
+            }
+          ]
+        },
+        {
+          "id": 5,
+          "title": "Connector processing gap (events rate - data rate)",
+          "description": "Approximate health signal for the agent->connector->data-topic hop, which doesn't register as a normal Kafka consumer group so has no direct lag metric. A gap that stays near zero (after accounting for replica-duplicate events) means the connector is keeping up; a sustained positive, growing gap means it's falling behind.",
+          "type": "timeseries",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "$datasource"
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 24,
+            "x": 0,
+            "y": 15
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ops",
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 2
+              }
+            }
+          },
+          "targets": [
+            {
+              "expr": "sum(rate(kminion_kafka_topic_partition_high_water_mark{topic_name=\"events-ks1.loadgen\"}[1m])) - sum(rate(kminion_kafka_topic_partition_high_water_mark{topic_name=\"data-ks1.loadgen\"}[1m]))",
+              "legendFormat": "events - data rate"
+            }
+          ]
+        }
+      ]
+    }

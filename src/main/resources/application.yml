@@ -19,3 +19,12 @@ demo:
     keyspace: ks1
     table: loadgen
     data-topic: data-ks1.loadgen
+  open-search:
+    url: http://localhost:9200
+    index: data-ks1.loadgen
+  kafka-connect:
+    url: http://localhost:8083
+    connectors:
+      - cassandra-source-ks1-loadgen
+      - cassandra-source-ks1-table1
+      - opensearch-sink-ks1-loadgen

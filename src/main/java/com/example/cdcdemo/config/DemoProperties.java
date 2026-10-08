@@ -4,6 +4,8 @@ import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.NestedConfigurationProperty;
 
+import java.util.List;
+
 @Data
 @ConfigurationProperties(prefix = "demo")
 public class DemoProperties {
@@ -16,6 +18,12 @@ public class DemoProperties {
 
     @NestedConfigurationProperty
     private Loadgen loadgen = new Loadgen();
+
+    @NestedConfigurationProperty
+    private OpenSearch openSearch = new OpenSearch();
+
+    @NestedConfigurationProperty
+    private KafkaConnect kafkaConnect = new KafkaConnect();
 
     @Data
     public static class Cassandra {
@@ -43,5 +51,17 @@ public class DemoProperties {
         private String keyspace;
         private String table;
         private String dataTopic;
+    }
+
+    @Data
+    public static class OpenSearch {
+        private String url;
+        private String index;
+    }
+
+    @Data
+    public static class KafkaConnect {
+        private String url;
+        private List<String> connectors;
     }
 }

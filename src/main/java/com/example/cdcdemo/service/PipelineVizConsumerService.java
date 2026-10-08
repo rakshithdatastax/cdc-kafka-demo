@@ -25,25 +25,26 @@ import java.util.Properties;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
-
 @Slf4j
 @Service
-public class Table1ConsumerService {
+public class PipelineVizConsumerService {
+
+    private static final int MAX_TRACKED_ROWS = 500;
 
     private final DemoProperties props;
-    private final Map<String, Map<String, Object>> hashMap = new ConcurrentHashMap<>();
+    private final Map<String, Map<String, Object>> recentRows = new ConcurrentHashMap<>();
+    private final Map<String, Long> arrivalOrder = new ConcurrentHashMap<>();
     private volatile boolean running = true;
     private volatile long messagesConsumed;
-    private volatile long lastMessageAt;
     private Thread consumerThread;
 
-    public Table1ConsumerService(DemoProperties props) {
+    public PipelineVizConsumerService(DemoProperties props) {
         this.props = props;
     }
 
     @PostConstruct
     void start() {
-        consumerThread = new Thread(this::consumeLoop, "table1-consumer");
+        consumerThread = new Thread(this::consumeLoop, "pipeline-viz-consumer");
         consumerThread.setDaemon(true);
         consumerThread.start();
     }
@@ -56,38 +57,27 @@ public class Table1ConsumerService {
         }
     }
 
-    public Map<String, Map<String, Object>> snapshot() {
-        return new LinkedHashMap<>(hashMap);
-    }
-
-    public Map<String, Object> status() {
-        Map<String, Object> status = new LinkedHashMap<>();
-        status.put("hashmapSize", hashMap.size());
-        status.put("messagesConsumed", messagesConsumed);
-        status.put("lastMessageAt", lastMessageAt == 0 ? null : java.time.Instant.ofEpochMilli(lastMessageAt).toString());
-        return status;
+    public Map<String, Object> getRow(String id) {
+        return recentRows.get(id);
     }
 
     private void consumeLoop() {
-        String topic = props.getKafka().getDataTopic();
+        String topic = props.getLoadgen().getDataTopic();
         Properties consumerProps = new Properties();
         consumerProps.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, props.getKafka().getBootstrapServers());
-        consumerProps.put(ConsumerConfig.GROUP_ID_CONFIG, "cdc-kafka-demo-table1-consumer-" + System.nanoTime());
+        consumerProps.put(ConsumerConfig.GROUP_ID_CONFIG, "cdc-kafka-demo-pipeline-viz-" + System.nanoTime());
         consumerProps.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class.getName());
         consumerProps.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class.getName());
-        consumerProps.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
+        consumerProps.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "latest");
         consumerProps.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false");
 
-        KafkaAvroDeserializer avroDeserializer = new KafkaAvroDeserializer();
-        avroDeserializer.configure(Map.of(
+        KafkaAvroDeserializer valueDeserializer = new KafkaAvroDeserializer();
+        valueDeserializer.configure(Map.of(
                 KafkaAvroDeserializerConfig.SCHEMA_REGISTRY_URL_CONFIG, props.getKafka().getSchemaRegistryUrl(),
                 KafkaAvroDeserializerConfig.SPECIFIC_AVRO_READER_CONFIG, false
         ), false);
-        // Separate instance (isKey=true) because the key subject ("<topic>-key") is registered
-        // separately from the value subject -- see AvroKeyDecoder for why this is only used for
-        // messages produced after the key-wire-format fix; older messages fall back below.
-        KafkaAvroDeserializer keyAvroDeserializer = new KafkaAvroDeserializer();
-        keyAvroDeserializer.configure(Map.of(
+        KafkaAvroDeserializer keyDeserializer = new KafkaAvroDeserializer();
+        keyDeserializer.configure(Map.of(
                 KafkaAvroDeserializerConfig.SCHEMA_REGISTRY_URL_CONFIG, props.getKafka().getSchemaRegistryUrl(),
                 KafkaAvroDeserializerConfig.SPECIFIC_AVRO_READER_CONFIG, false
         ), true);
@@ -98,28 +88,49 @@ public class Table1ConsumerService {
                 return; // stop() was called while waiting
             }
             consumer.assign(partitions);
-            consumer.seekToBeginning(partitions);
-            log.info("table1 consumer started on {} ({} partitions)", topic, partitions.size());
+            consumer.seekToEnd(partitions);
+            log.info("pipeline-viz consumer started on {} ({} partitions), tailing from latest", topic, partitions.size());
 
             while (running) {
-                ConsumerRecords<byte[], byte[]> records = consumer.poll(Duration.ofMillis(1000));
+                ConsumerRecords<byte[], byte[]> records = consumer.poll(Duration.ofMillis(500));
                 for (ConsumerRecord<byte[], byte[]> record : records) {
-                    String key = AvroKeyDecoder.decodeId(record.key(), keyAvroDeserializer, topic);
-                    if (record.value() == null) {
-                        hashMap.remove(key);
-                    } else {
-                        GenericRecord decoded = (GenericRecord) avroDeserializer.deserialize(topic, record.value());
-                        hashMap.put(key, genericRecordToMap(decoded));
+                    try {
+                        String key = AvroKeyDecoder.decodeId(record.key(), keyDeserializer, topic);
+                        if (key == null) {
+                            continue;
+                        }
+                        if (record.value() == null) {
+                            recentRows.remove(key);
+                            arrivalOrder.remove(key);
+                        } else {
+                            GenericRecord decoded = (GenericRecord) valueDeserializer.deserialize(topic, record.value());
+                            recentRows.put(key, genericRecordToMap(decoded));
+                            arrivalOrder.put(key, System.nanoTime());
+                            evictOldestIfNeeded();
+                        }
+                    } catch (Exception recordError) {
+                        log.warn("skipping unreadable pipeline-viz record at offset {}", record.offset(), recordError);
                     }
                     messagesConsumed++;
-                    lastMessageAt = System.currentTimeMillis();
                 }
             }
         } catch (Exception e) {
             if (running) {
-                log.error("table1 consumer stopped unexpectedly", e);
+                log.error("pipeline-viz consumer stopped unexpectedly", e);
             }
         }
+    }
+
+    private void evictOldestIfNeeded() {
+        if (recentRows.size() <= MAX_TRACKED_ROWS) {
+            return;
+        }
+        arrivalOrder.entrySet().stream()
+                .min(Map.Entry.comparingByValue())
+                .ifPresent(oldest -> {
+                    recentRows.remove(oldest.getKey());
+                    arrivalOrder.remove(oldest.getKey());
+                });
     }
 
     private List<TopicPartition> waitForPartitions(KafkaConsumer<byte[], byte[]> consumer, String topic) throws InterruptedException {
