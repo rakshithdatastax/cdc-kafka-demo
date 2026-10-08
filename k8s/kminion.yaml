@@ -1,0 +1,86 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kminion-config
+  namespace: kafka
+data:
+  config.yaml: |
+    logger:
+      level: info
+    kafka:
+      brokers:
+        - dev-kafka.kafka.svc.cluster.local:9092
+    minion:
+      consumerGroups:
+        enabled: true
+        granularity: partition
+      topics:
+        enabled: true
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kminion
+  namespace: kafka
+  labels:
+    app: kminion
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kminion
+  template:
+    metadata:
+      labels:
+        app: kminion
+    spec:
+      containers:
+        - name: kminion
+          image: redpandadata/kminion:v2.3.6
+          ports:
+            - name: metrics
+              containerPort: 8080
+          volumeMounts:
+            - name: config
+              mountPath: /etc/kminion
+          env:
+            - name: CONFIG_FILEPATH
+              value: /etc/kminion/config.yaml
+      volumes:
+        - name: config
+          configMap:
+            name: kminion-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kminion
+  namespace: kafka
+  labels:
+    app: kminion
+spec:
+  selector:
+    app: kminion
+  ports:
+    - name: metrics
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: kminion
+  namespace: kafka
+  labels:
+    release: kube-prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      app: kminion
+  namespaceSelector:
+    matchNames:
+      - kafka
+  endpoints:
+    - port: metrics
+      interval: 15s
+      path: /metrics

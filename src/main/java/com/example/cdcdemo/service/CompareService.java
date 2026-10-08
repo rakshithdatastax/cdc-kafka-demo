@@ -69,7 +69,7 @@ public class CompareService {
     }
 
     private Map<String, Object> fetchDbRow(String id) {
-        String qualifiedTable = props.getCassandra().getKeyspace() + "." + props.getCassandra().getTable();
+        String qualifiedTable = props.getLoadgen().getKeyspace() + "." + props.getLoadgen().getTable();
         Row row = session.execute("SELECT * FROM " + qualifiedTable + " WHERE id = ?", id).one();
         if (row == null) {
             return null;
@@ -86,7 +86,7 @@ public class CompareService {
     }
 
     private Map<String, Map<String, Object>> fetchAllDbRows() {
-        String qualifiedTable = props.getCassandra().getKeyspace() + "." + props.getCassandra().getTable();
+        String qualifiedTable = props.getLoadgen().getKeyspace() + "." + props.getLoadgen().getTable();
         Map<String, Map<String, Object>> rows = new LinkedHashMap<>();
         for (Row row : session.execute("SELECT * FROM " + qualifiedTable)) {
             String pk = row.getString("id");

@@ -3,8 +3,10 @@ package com.example.cdcdemo.controller;
 import com.example.cdcdemo.config.DemoProperties;
 import com.example.cdcdemo.service.CassandraDemoService;
 import com.example.cdcdemo.service.CompareService;
+import com.example.cdcdemo.service.ConnectHealthService;
 import com.example.cdcdemo.service.KafkaMessageService;
 import com.example.cdcdemo.service.LoadGenUiService;
+import com.example.cdcdemo.service.PipelineVizService;
 import com.example.cdcdemo.service.SchemaEvolutionService;
 import com.example.cdcdemo.service.Table1ConsumerService;
 import com.example.cdcdemo.service.Table1ValidationService;
@@ -26,6 +28,8 @@ public class DemoController {
     private final LoadGenUiService loadGenUiService;
     private final SchemaEvolutionService schemaEvolutionService;
     private final CompareService compareService;
+    private final PipelineVizService pipelineVizService;
+    private final ConnectHealthService connectHealthService;
     private final DemoProperties props;
 
     @PostMapping("/create-table")
@@ -140,5 +144,24 @@ public class DemoController {
     @GetMapping("/compare")
     public Map<String, Object> compareAll() throws Exception {
         return compareService.compareAll();
+    }
+
+    // --- Pipeline visualizer: one dummy row, watched through Cassandra -> Kafka -> OpenSearch ---
+
+    @PostMapping("/pipeline-viz/insert")
+    public Map<String, Object> pipelineVizInsert(@RequestParam(required = false) Integer value) {
+        return pipelineVizService.insertDummy(value);
+    }
+
+    @GetMapping("/pipeline-viz/status/{id}")
+    public Map<String, Object> pipelineVizStatus(@PathVariable String id) throws Exception {
+        return pipelineVizService.status(id);
+    }
+
+    // --- Kafka Connect connector health ---
+
+    @GetMapping("/connectors/health")
+    public List<Map<String, Object>> connectorsHealth() {
+        return connectHealthService.health();
     }
 }

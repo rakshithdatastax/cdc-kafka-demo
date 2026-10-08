@@ -17,6 +17,8 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
@@ -29,15 +31,28 @@ public class SchemaEvolutionService {
 
     public Map<String, Object> current() throws Exception {
         Map<String, Object> result = new LinkedHashMap<>();
-        result.put("cassandra", cassandraSchema());
-        result.put("kafka", kafkaSchemaHistory());
+        result.put("cassandra", allTablesCassandraSchema());
+        result.put("kafka", allSubjectsSchemaHistory());
         return result;
     }
 
-    private Map<String, Object> cassandraSchema() {
+    // Both ks1.table1 (the demo table) and ks1.loadgen (what the loadgen pod actually writes to,
+    // and the table with real schema-evolution history) feed Kafka subjects shown alongside this,
+    // so both need to be listed here -- not just the demo table.
+    private Map<String, Object> allTablesCassandraSchema() {
+        List<Map<String, Object>> tables = new ArrayList<>();
+        tables.add(tableSchema(props.getCassandra().getKeyspace(), props.getCassandra().getTable()));
+        tables.add(tableSchema(props.getLoadgen().getKeyspace(), props.getLoadgen().getTable()));
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("tables", tables);
+        return result;
+    }
+
+    private Map<String, Object> tableSchema(String keyspace, String table) {
         var tableMeta = session.getMetadata()
-                .getKeyspace(props.getCassandra().getKeyspace())
-                .flatMap(ks -> ks.getTable(props.getCassandra().getTable()));
+                .getKeyspace(keyspace)
+                .flatMap(ks -> ks.getTable(table));
 
         List<Map<String, String>> columns = new ArrayList<>();
         if (tableMeta.isPresent()) {
@@ -50,55 +65,106 @@ public class SchemaEvolutionService {
         }
 
         Map<String, Object> result = new LinkedHashMap<>();
-        result.put("keyspace", props.getCassandra().getKeyspace());
-        result.put("table", props.getCassandra().getTable());
+        result.put("keyspace", keyspace);
+        result.put("table", table);
         result.put("columns", columns);
         result.put("columnCount", columns.size());
         return result;
     }
 
-    private Map<String, Object> kafkaSchemaHistory() throws Exception {
-        String subject = props.getKafka().getDataTopic() + "-value";
+    // Fetches every subject's version history concurrently -- sequential round trips through the
+    // schema-registry port-forward (one per subject, one per version) add up to several seconds
+    // once there are a dozen-plus versions across subjects.
+    private Map<String, Object> allSubjectsSchemaHistory() throws Exception {
         String baseUrl = props.getKafka().getSchemaRegistryUrl();
 
         Map<String, Object> result = new LinkedHashMap<>();
-        result.put("subject", subject);
 
-        HttpResponse<String> versionsResponse = http.send(
-                HttpRequest.newBuilder(URI.create(baseUrl + "/subjects/" + subject + "/versions")).GET().build(),
+        HttpResponse<String> subjectsResponse = http.send(
+                HttpRequest.newBuilder(URI.create(baseUrl + "/subjects")).GET().build(),
                 HttpResponse.BodyHandlers.ofString());
-        if (versionsResponse.statusCode() != 200) {
-            result.put("versions", List.of());
-            result.put("error", "subject not found yet -- has the connector published a row?");
+        if (subjectsResponse.statusCode() != 200) {
+            result.put("subjects", List.of());
+            result.put("error", "could not reach schema registry at " + baseUrl);
             return result;
         }
 
-        List<Integer> versionNumbers = new ArrayList<>();
-        mapper.readTree(versionsResponse.body()).forEach(n -> versionNumbers.add(n.asInt()));
-        versionNumbers.sort(Comparator.naturalOrder());
+        List<String> subjectNames = new ArrayList<>();
+        mapper.readTree(subjectsResponse.body()).forEach(n -> subjectNames.add(n.asText()));
+        subjectNames.sort(Comparator.naturalOrder());
 
-        List<Map<String, Object>> versions = new ArrayList<>();
-        for (int version : versionNumbers) {
-            HttpResponse<String> versionResponse = http.send(
-                    HttpRequest.newBuilder(URI.create(baseUrl + "/subjects/" + subject + "/versions/" + version)).GET().build(),
-                    HttpResponse.BodyHandlers.ofString());
-            JsonNode versionJson = mapper.readTree(versionResponse.body());
-            JsonNode schemaJson = mapper.readTree(versionJson.path("schema").asText());
+        List<Map<String, Object>> subjects = subjectNames.stream()
+                .map(subject -> subjectSchemaHistoryAsync(subject, baseUrl))
+                .toList()
+                .stream()
+                .map(CompletableFuture::join)
+                .collect(Collectors.toList());
 
-            List<String> fields = new ArrayList<>();
-            for (JsonNode field : schemaJson.path("fields")) {
-                fields.add(field.path("name").asText());
-            }
-
-            Map<String, Object> versionEntry = new LinkedHashMap<>();
-            versionEntry.put("version", version);
-            versionEntry.put("schemaId", versionJson.path("id").asInt());
-            versionEntry.put("fields", fields);
-            versions.add(versionEntry);
-        }
-
-        result.put("versions", versions);
-        result.put("versionCount", versions.size());
+        result.put("subjects", subjects);
+        result.put("subjectCount", subjects.size());
         return result;
+    }
+
+    private CompletableFuture<Map<String, Object>> subjectSchemaHistoryAsync(String subject, String baseUrl) {
+        return http.sendAsync(
+                        HttpRequest.newBuilder(URI.create(baseUrl + "/subjects/" + subject + "/versions")).GET().build(),
+                        HttpResponse.BodyHandlers.ofString())
+                .thenCompose(versionsResponse -> {
+                    Map<String, Object> result = new LinkedHashMap<>();
+                    result.put("subject", subject);
+
+                    if (versionsResponse.statusCode() != 200) {
+                        result.put("versions", List.of());
+                        result.put("error", "subject not found yet -- has the connector published a row?");
+                        return CompletableFuture.completedFuture(result);
+                    }
+
+                    List<Integer> versionNumbers = new ArrayList<>();
+                    try {
+                        mapper.readTree(versionsResponse.body()).forEach(n -> versionNumbers.add(n.asInt()));
+                    } catch (Exception e) {
+                        throw new RuntimeException(e);
+                    }
+
+                    List<CompletableFuture<Map<String, Object>>> versionFutures = versionNumbers.stream()
+                            .map(version -> fetchVersionAsync(subject, version, baseUrl))
+                            .toList();
+
+                    return CompletableFuture.allOf(versionFutures.toArray(new CompletableFuture[0]))
+                            .thenApply(ignored -> {
+                                List<Map<String, Object>> versions = versionFutures.stream()
+                                        .map(CompletableFuture::join)
+                                        .sorted(Comparator.comparingInt(m -> (int) m.get("version")))
+                                        .collect(Collectors.toList());
+                                result.put("versions", versions);
+                                result.put("versionCount", versions.size());
+                                return result;
+                            });
+                });
+    }
+
+    private CompletableFuture<Map<String, Object>> fetchVersionAsync(String subject, int version, String baseUrl) {
+        return http.sendAsync(
+                        HttpRequest.newBuilder(URI.create(baseUrl + "/subjects/" + subject + "/versions/" + version)).GET().build(),
+                        HttpResponse.BodyHandlers.ofString())
+                .thenApply(versionResponse -> {
+                    try {
+                        JsonNode versionJson = mapper.readTree(versionResponse.body());
+                        JsonNode schemaJson = mapper.readTree(versionJson.path("schema").asText());
+
+                        List<String> fields = new ArrayList<>();
+                        for (JsonNode field : schemaJson.path("fields")) {
+                            fields.add(field.path("name").asText());
+                        }
+
+                        Map<String, Object> versionEntry = new LinkedHashMap<>();
+                        versionEntry.put("version", version);
+                        versionEntry.put("schemaId", versionJson.path("id").asInt());
+                        versionEntry.put("fields", fields);
+                        return versionEntry;
+                    } catch (Exception e) {
+                        throw new RuntimeException(e);
+                    }
+                });
     }
 }

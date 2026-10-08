@@ -177,3 +177,42 @@ column added by a mid-run `ALTER TABLE` existing in Cassandra before the
 consumer has decoded a record carrying it isn't counted as a mismatch —
 only columns present on both sides are compared, per the "eventually
 consistent" framing in the doc rather than "instantaneously consistent".
+
+## Performance/stability dashboard (Grafana)
+
+**One-time setup** (already done on the shared dev cluster as of this
+writing, but needed again if the cluster is ever rebuilt):
+
+```bash
+kubectl label namespace kafka watch-prometheus-resources=true
+kubectl apply -f k8s/kminion.yaml
+kubectl apply -f k8s/grafana-dashboard.yaml
+```
+
+For the doc's Performance and Scalability section (Case 0: E2E Perf Test up
+to OpenSearch — find the max update rate that doesn't saturate the pipeline,
+and the min rate that does, by watching for backlog growth), `./run.sh`
+port-forwards the cluster's existing Grafana (`kube-prometheus-stack` in the
+`monitoring` namespace — not owned by this demo) to `localhost:3000`.
+
+Open **http://localhost:3000** (user `admin`, password in the
+`kube-prometheus-stack-grafana-admin` secret: `kubectl -n monitoring get
+secret kube-prometheus-stack-grafana-admin -o jsonpath='{.data.admin-password}'
+| base64 -d`) and look for **"CDC for Cassandra -- E2E Pipeline Health."**
+
+That dashboard is backed by [kminion](https://github.com/redpanda-data/kminion)
+(`kafka` namespace, manifest in `k8s/kminion.yaml`), a lightweight exporter
+that talks to Kafka over the normal client protocol — no JMX or broker
+changes needed — and exposes consumer-group lag and topic throughput as
+Prometheus metrics. It's scraped via a `ServiceMonitor`, which required
+labeling the `kafka` namespace `watch-prometheus-resources=true` (the
+convention this cluster's Prometheus already uses to opt namespaces in).
+
+Panels:
+- **OpenSearch sink consumer lag** (`data-ks1.loadgen`) — the primary
+  backlog signal from the doc: flat near zero in a happy path, a sustained
+  upward trend means the pipeline (up to OpenSearch) can't keep up.
+- **Raw mutation rate** (events topic) vs. **deduped write rate** (data
+  topic), and their **gap** — the agent→connector hop doesn't register as a
+  normal Kafka consumer group (Connect manages it internally), so this gap
+  is the closest available proxy for that stage's health specifically.

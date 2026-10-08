@@ -78,7 +78,7 @@ PF_PIDS=()
 cleanup() {
     echo ""
     echo "Stopping port-forwards..."
-    for pid in "${PF_PIDS[@]:-}"; do
+    for pid in "${PF_PIDS[@]+"${PF_PIDS[@]}"}"; do
         kill "$pid" >/dev/null 2>&1 || true
     done
 }
@@ -90,7 +90,7 @@ start_port_forward() {
     if [ -n "$address" ]; then
         addr_flag=(--address "$address")
     fi
-    kubectl --context "$CTX" -n "$namespace" port-forward "${addr_flag[@]}" "$target" "$ports" \
+    kubectl --context "$CTX" -n "$namespace" port-forward "${addr_flag[@]+"${addr_flag[@]}"}" "$target" "$ports" \
         > "/tmp/cdc-kafka-demo-pf-${label}.log" 2>&1 &
     PF_PIDS+=("$!")
 }
@@ -114,14 +114,21 @@ check_loopback_aliases
 echo "Starting port-forwards against $CTX..."
 start_port_forward cassandra svc/dev-cassandra-dc1-service 9042:9042 cassandra
 start_port_forward kafka svc/schema-registry 8080:8080 schema-registry
+start_port_forward kafka svc/kafka-connect 8083:8083 kafka-connect
 start_port_forward opensearch svc/opensearch-cluster-master 9200:9200 opensearch
+# Grafana (kube-prometheus-stack, already deployed cluster-wide -- not owned by this demo).
+# Serves port 80 internally; see the "CDC for Cassandra -- E2E Pipeline Health" dashboard,
+# backed by kminion (namespace kafka) exporting Kafka consumer-lag/throughput metrics.
+start_port_forward monitoring svc/kube-prometheus-stack-grafana 3000:80 grafana
 for i in "${!KAFKA_BROKERS[@]}"; do
     start_port_forward kafka "pod/${KAFKA_BROKERS[$i]}" 9092:9092 "kafka-${i}" "${KAFKA_LOOPBACK_IPS[$i]}"
 done
 
 wait_for_port localhost 9042 Cassandra
 wait_for_port localhost 8080 "Schema registry"
+wait_for_port localhost 8083 "Kafka Connect"
 wait_for_port localhost 9200 OpenSearch
+wait_for_port localhost 3000 Grafana
 for i in "${!KAFKA_BROKERS[@]}"; do
     wait_for_port "${KAFKA_LOOPBACK_IPS[$i]}" 9092 "Kafka broker ${KAFKA_BROKERS[$i]}"
 done

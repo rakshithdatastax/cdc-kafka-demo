@@ -7,10 +7,7 @@ import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.avro.Schema;
-import org.apache.avro.generic.GenericDatumReader;
 import org.apache.avro.generic.GenericRecord;
-import org.apache.avro.io.BinaryDecoder;
-import org.apache.avro.io.DecoderFactory;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
@@ -68,6 +65,10 @@ public class LoadGenConsumerService {
         return new LinkedHashMap<>(hashMap);
     }
 
+    public Map<String, Object> getRow(String id) {
+        return hashMap.get(id);
+    }
+
     public Map<String, Object> status() {
         Map<String, Object> status = new LinkedHashMap<>();
         status.put("hashmapSize", hashMap.size());
@@ -91,6 +92,13 @@ public class LoadGenConsumerService {
                 KafkaAvroDeserializerConfig.SCHEMA_REGISTRY_URL_CONFIG, props.getKafka().getSchemaRegistryUrl(),
                 KafkaAvroDeserializerConfig.SPECIFIC_AVRO_READER_CONFIG, false
         ), false);
+        // Separate instance (isKey=true) -- see AvroKeyDecoder for why: this topic spans both the
+        // pre-fix (raw, non-wire-format) and post-fix (proper Confluent wire-format) eras.
+        KafkaAvroDeserializer keyDeserializer = new KafkaAvroDeserializer();
+        keyDeserializer.configure(Map.of(
+                KafkaAvroDeserializerConfig.SCHEMA_REGISTRY_URL_CONFIG, props.getKafka().getSchemaRegistryUrl(),
+                KafkaAvroDeserializerConfig.SPECIFIC_AVRO_READER_CONFIG, false
+        ), true);
 
         try (KafkaConsumer<byte[], byte[]> consumer = new KafkaConsumer<>(consumerProps)) {
             List<TopicPartition> partitions = waitForPartitions(consumer, topic);
@@ -104,12 +112,18 @@ public class LoadGenConsumerService {
             while (running) {
                 ConsumerRecords<byte[], byte[]> records = consumer.poll(Duration.ofMillis(1000));
                 for (ConsumerRecord<byte[], byte[]> record : records) {
-                    String key = decodeAvroStringKey(record.key());
-                    if (record.value() == null) {
-                        hashMap.remove(key);
-                    } else {
-                        GenericRecord decoded = (GenericRecord) avroDeserializer.deserialize(topic, record.value());
-                        hashMap.put(key, genericRecordToMap(decoded));
+                    try {
+                        String key = AvroKeyDecoder.decodeId(record.key(), keyDeserializer, topic);
+                        if (key != null) {
+                            if (record.value() == null) {
+                                hashMap.remove(key);
+                            } else {
+                                GenericRecord decoded = (GenericRecord) avroDeserializer.deserialize(topic, record.value());
+                                hashMap.put(key, genericRecordToMap(decoded));
+                            }
+                        }
+                    } catch (Exception recordError) {
+                        log.warn("skipping unreadable loadgen record at offset {}", record.offset(), recordError);
                     }
                     messagesConsumed++;
                     lastMessageAt = System.currentTimeMillis();
@@ -135,13 +149,6 @@ public class LoadGenConsumerService {
             Thread.sleep(2000);
         }
         return null;
-    }
-
-    private String decodeAvroStringKey(byte[] bytes) throws Exception {
-        Schema stringSchema = Schema.create(Schema.Type.STRING);
-        BinaryDecoder decoder = DecoderFactory.get().binaryDecoder(bytes, null);
-        GenericDatumReader<Object> reader = new GenericDatumReader<>(stringSchema);
-        return reader.read(null, decoder).toString();
     }
 
     private Map<String, Object> genericRecordToMap(GenericRecord record) {
