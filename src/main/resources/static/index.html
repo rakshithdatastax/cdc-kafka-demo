@@ -285,6 +285,7 @@
     min-width: 0;
   }
   .viz-stage.arrived { border-color: var(--good-border); }
+  .viz-stage.deleted { border-color: var(--bad-border); background: var(--bad-bg); }
   .viz-stage-title { font-size: 12px; text-transform: uppercase; letter-spacing: 0.03em; color: var(--muted); margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; }
   .viz-arrow { display: flex; align-items: center; justify-content: center; width: 44px; color: var(--muted-dim); font-size: 18px; flex-shrink: 0; }
   .viz-fields { font-family: var(--font-mono); font-size: 12px; color: var(--text); }
@@ -357,7 +358,7 @@
     <div class="panel wide">
       <div class="panel-head">
         <h2>Real-time compare</h2>
-        <label class="toggle"><input type="checkbox" id="autoCompare" onchange="toggleAuto('autoCompare', compareAll, 3000)" checked> auto-refresh (all)</label>
+        <label class="toggle"><input type="checkbox" id="autoCompare" onchange="toggleAuto('autoCompare', compareAll, 10000)" checked> auto-refresh (all)</label>
       </div>
       <p class="hint">Cassandra <code>ks1.loadgen</code> vs. the OpenSearch index it's sinked to, compared directly &mdash; no intermediate cache.</p>
       <div class="row">
@@ -374,12 +375,18 @@
   <div class="tab-panel" id="tab-viz">
     <div class="panel wide">
       <div class="panel-head"><h2>Watch one row propagate</h2></div>
-      <p class="hint">Inserts a single row into <code>ks1.loadgen</code> and polls each stage of the real pipeline until it arrives &mdash; nothing here is simulated.</p>
+      <p class="hint">Inserts, updates, or deletes a single row in <code>ks1.loadgen</code> and polls each stage of the real pipeline until the change arrives &mdash; nothing here is simulated.</p>
       <div class="row">
         <span class="label">Value</span>
         <input type="number" id="vizValue" placeholder="random">
         <button class="primary" onclick="insertPipelineViz()">Insert dummy row</button>
         <span id="vizIdLabel" class="muted"></span>
+      </div>
+      <div class="row" id="vizEditRow" style="display:none">
+        <span class="label">New value</span>
+        <input type="number" id="vizUpdateValue" placeholder="random">
+        <button onclick="updatePipelineViz()">Update row</button>
+        <button class="danger" onclick="deletePipelineViz()">Delete row</button>
       </div>
 
       <div class="viz-stages" id="vizStages">
@@ -695,6 +702,7 @@ function toggleAuto(checkboxId, fn, intervalMs) {
 
 let vizPollTimer = null;
 let vizStartedAt = 0;
+let vizCurrentId = null;
 
 function fieldsHtml(fields) {
   if (!fields) return '';
@@ -706,6 +714,7 @@ function fieldsHtml(fields) {
 
 function setVizStage(elId, arrived, fields, label) {
   const el = document.getElementById(elId);
+  el.classList.remove('deleted');
   el.classList.toggle('arrived', !!arrived);
   const elapsed = arrived ? `<div class="viz-elapsed">arrived after ${((Date.now() - vizStartedAt) / 1000).toFixed(1)}s</div>` : '';
   if (arrived) {
@@ -715,30 +724,111 @@ function setVizStage(elId, arrived, fields, label) {
   }
 }
 
+function setVizStageDeleted(elId) {
+  const el = document.getElementById(elId);
+  el.classList.remove('arrived');
+  el.classList.add('deleted');
+  const elapsed = `<div class="viz-elapsed">confirmed gone after ${((Date.now() - vizStartedAt) / 1000).toFixed(1)}s</div>`;
+  el.querySelector('.viz-fields').innerHTML = `<span class="muted">tombstone received &mdash; row removed</span>${elapsed}`;
+}
+
+function setVizStageWaitingForDelete(elId, label) {
+  const el = document.getElementById(elId);
+  el.classList.remove('arrived', 'deleted');
+  el.querySelector('.viz-fields').innerHTML = `<span class="spinner"></span> <span class="muted">waiting for ${label} to drop it&hellip;</span>`;
+}
+
+function showVizEditRow(show) {
+  document.getElementById('vizEditRow').style.display = show ? '' : 'none';
+}
+
 async function insertPipelineViz() {
   if (vizPollTimer) { clearInterval(vizPollTimer); vizPollTimer = null; }
   const valueInput = document.getElementById('vizValue').value;
   const url = '/demo/pipeline-viz/insert' + (valueInput ? `?value=${encodeURIComponent(valueInput)}` : '');
   const inserted = await postJson(url);
   const id = inserted.id;
+  vizCurrentId = id;
   vizStartedAt = Date.now();
   document.getElementById('vizIdLabel').textContent = `id = ${id}`;
+  showVizEditRow(true);
 
+  document.getElementById('vizStageCassandra').classList.remove('deleted');
   document.getElementById('vizStageCassandra').classList.add('arrived');
   document.getElementById('vizStageCassandra').querySelector('.viz-fields').innerHTML =
     fieldsHtml({ c0: inserted.value }) + `<div class="viz-elapsed">inserted at ${new Date(inserted.insertedAt).toLocaleTimeString()}</div>`;
   setVizStage('vizStageKafka', false, null, 'the CDC pipeline');
   setVizStage('vizStageOpenSearch', false, null, 'the OpenSearch sink');
 
+  pollUntilArrived(id, null);
+}
+
+async function updatePipelineViz() {
+  if (!vizCurrentId) return;
+  if (vizPollTimer) { clearInterval(vizPollTimer); vizPollTimer = null; }
+  const valueInput = document.getElementById('vizUpdateValue').value;
+  const url = `/demo/pipeline-viz/update?id=${encodeURIComponent(vizCurrentId)}` + (valueInput ? `&value=${encodeURIComponent(valueInput)}` : '');
+  const updated = await postJson(url);
+  vizStartedAt = Date.now();
+
+  document.getElementById('vizStageCassandra').classList.remove('deleted');
+  document.getElementById('vizStageCassandra').classList.add('arrived');
+  document.getElementById('vizStageCassandra').querySelector('.viz-fields').innerHTML =
+    fieldsHtml({ c0: updated.value }) + `<div class="viz-elapsed">updated at ${new Date(updated.updatedAt).toLocaleTimeString()}</div>`;
+  setVizStage('vizStageKafka', false, null, 'the CDC pipeline to pick up the new value');
+  setVizStage('vizStageOpenSearch', false, null, 'the OpenSearch sink to pick up the new value');
+
+  // Expect the new value specifically -- the old value is still sitting in both stages
+  // from the prior insert, so "arrived" alone isn't proof the update propagated.
+  pollUntilArrived(vizCurrentId, String(updated.value));
+}
+
+function pollUntilArrived(id, expectedValue) {
   let attempts = 0;
   vizPollTimer = setInterval(async () => {
     attempts++;
     const status = await getJson(`/demo/pipeline-viz/status/${encodeURIComponent(id)}`);
-    if (status.kafka) setVizStage('vizStageKafka', true, status.kafka, 'the CDC pipeline');
-    if (status.openSearch) setVizStage('vizStageOpenSearch', true, status.openSearch, 'the OpenSearch sink');
-    if ((status.kafka && status.openSearch) || attempts > 40) {
+    const kafkaMatches = status.kafka && (!expectedValue || status.kafka.c0 === expectedValue);
+    const osMatches = status.openSearch && (!expectedValue || status.openSearch.c0 === expectedValue);
+    if (kafkaMatches) setVizStage('vizStageKafka', true, status.kafka, 'the CDC pipeline');
+    if (osMatches) setVizStage('vizStageOpenSearch', true, status.openSearch, 'the OpenSearch sink');
+    if ((kafkaMatches && osMatches) || attempts > 40) {
       clearInterval(vizPollTimer);
       vizPollTimer = null;
+    }
+  }, 1000);
+}
+
+async function deletePipelineViz() {
+  if (!vizCurrentId) return;
+  if (vizPollTimer) { clearInterval(vizPollTimer); vizPollTimer = null; }
+  const id = vizCurrentId;
+  const deleted = await postJson(`/demo/pipeline-viz/delete?id=${encodeURIComponent(id)}`);
+  vizStartedAt = Date.now();
+
+  document.getElementById('vizStageCassandra').classList.remove('arrived');
+  document.getElementById('vizStageCassandra').classList.add('deleted');
+  document.getElementById('vizStageCassandra').querySelector('.viz-fields').innerHTML =
+    `<span class="muted">row deleted</span><div class="viz-elapsed">at ${new Date(deleted.deletedAt).toLocaleTimeString()}</div>`;
+  setVizStageWaitingForDelete('vizStageKafka', 'the CDC pipeline');
+  setVizStageWaitingForDelete('vizStageOpenSearch', 'the OpenSearch sink');
+
+  let attempts = 0;
+  vizPollTimer = setInterval(async () => {
+    attempts++;
+    const status = await getJson(`/demo/pipeline-viz/status/${encodeURIComponent(id)}`);
+    const kafkaGone = status.kafkaTombstoned === true;
+    const osGone = !status.openSearch;
+    if (kafkaGone) setVizStageDeleted('vizStageKafka');
+    if (osGone) setVizStageDeleted('vizStageOpenSearch');
+    if ((kafkaGone && osGone) || attempts > 40) {
+      clearInterval(vizPollTimer);
+      vizPollTimer = null;
+      if (kafkaGone && osGone) {
+        vizCurrentId = null;
+        showVizEditRow(false);
+        document.getElementById('vizIdLabel').textContent = '';
+      }
     }
   }, 1000);
 }
@@ -796,7 +886,7 @@ async function refreshConnectorHealth() {
 refreshStatus();
 refreshSchema();
 toggleHealthAuto();
-toggleAuto('autoCompare', compareAll, 3000);
+toggleAuto('autoCompare', compareAll, 10000);
 </script>
 
 </body>

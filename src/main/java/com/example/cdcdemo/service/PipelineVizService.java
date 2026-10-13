@@ -42,11 +42,34 @@ public class PipelineVizService {
         return result;
     }
 
+    public Map<String, Object> updateDummy(String id, Integer value) {
+        int v = value != null ? value : random.nextInt(1000);
+        session.execute(
+                String.format("UPDATE %s SET c0 = ? WHERE id = ?", qualifiedTable()),
+                v, id);
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("id", id);
+        result.put("value", v);
+        result.put("updatedAt", Instant.now().toString());
+        return result;
+    }
+
+    public Map<String, Object> deleteDummy(String id) {
+        session.execute("DELETE FROM " + qualifiedTable() + " WHERE id = ?", id);
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("id", id);
+        result.put("deletedAt", Instant.now().toString());
+        return result;
+    }
+
     public Map<String, Object> status(String id) throws Exception {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("id", id);
         result.put("cassandra", fetchCassandraRow(id));
         result.put("kafka", kafkaView.getRow(id));
+        result.put("kafkaTombstoned", kafkaView.wasTombstoned(id));
         result.put("openSearch", openSearchService.getDocument(id));
         return result;
     }

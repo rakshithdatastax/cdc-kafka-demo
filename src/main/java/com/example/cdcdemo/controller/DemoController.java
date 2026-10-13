@@ -153,6 +153,16 @@ public class DemoController {
         return pipelineVizService.insertDummy(value);
     }
 
+    @PostMapping("/pipeline-viz/update")
+    public Map<String, Object> pipelineVizUpdate(@RequestParam String id, @RequestParam(required = false) Integer value) {
+        return pipelineVizService.updateDummy(id, value);
+    }
+
+    @PostMapping("/pipeline-viz/delete")
+    public Map<String, Object> pipelineVizDelete(@RequestParam String id) {
+        return pipelineVizService.deleteDummy(id);
+    }
+
     @GetMapping("/pipeline-viz/status/{id}")
     public Map<String, Object> pipelineVizStatus(@PathVariable String id) throws Exception {
         return pipelineVizService.status(id);

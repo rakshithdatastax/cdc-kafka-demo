@@ -34,6 +34,7 @@ public class PipelineVizConsumerService {
     private final DemoProperties props;
     private final Map<String, Map<String, Object>> recentRows = new ConcurrentHashMap<>();
     private final Map<String, Long> arrivalOrder = new ConcurrentHashMap<>();
+    private final Map<String, Long> recentTombstones = new ConcurrentHashMap<>();
     private volatile boolean running = true;
     private volatile long messagesConsumed;
     private Thread consumerThread;
@@ -59,6 +60,10 @@ public class PipelineVizConsumerService {
 
     public Map<String, Object> getRow(String id) {
         return recentRows.get(id);
+    }
+
+    public boolean wasTombstoned(String id) {
+        return recentTombstones.containsKey(id);
     }
 
     private void consumeLoop() {
@@ -102,10 +107,12 @@ public class PipelineVizConsumerService {
                         if (record.value() == null) {
                             recentRows.remove(key);
                             arrivalOrder.remove(key);
+                            recentTombstones.put(key, System.nanoTime());
                         } else {
                             GenericRecord decoded = (GenericRecord) valueDeserializer.deserialize(topic, record.value());
                             recentRows.put(key, genericRecordToMap(decoded));
                             arrivalOrder.put(key, System.nanoTime());
+                            recentTombstones.remove(key);
                             evictOldestIfNeeded();
                         }
                     } catch (Exception recordError) {
@@ -131,6 +138,11 @@ public class PipelineVizConsumerService {
                     recentRows.remove(oldest.getKey());
                     arrivalOrder.remove(oldest.getKey());
                 });
+        if (recentTombstones.size() > MAX_TRACKED_ROWS) {
+            recentTombstones.entrySet().stream()
+                    .min(Map.Entry.comparingByValue())
+                    .ifPresent(oldest -> recentTombstones.remove(oldest.getKey()));
+        }
     }
 
     private List<TopicPartition> waitForPartitions(KafkaConsumer<byte[], byte[]> consumer, String topic) throws InterruptedException {
