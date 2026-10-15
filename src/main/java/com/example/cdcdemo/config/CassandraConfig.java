@@ -20,6 +20,7 @@ public class CassandraConfig {
         DemoProperties.Cassandra c = props.getCassandra();
         DriverConfigLoader configLoader = DriverConfigLoader.programmaticBuilder()
                 .withDuration(DefaultDriverOption.REQUEST_TIMEOUT, Duration.ofSeconds(15))
+                .withString(DefaultDriverOption.ADDRESS_TRANSLATOR_CLASS, PortForwardAddressTranslator.class.getName())
                 .build();
         return CqlSession.builder()
                 .addContactPoint(new InetSocketAddress(c.getContactPoint(), c.getPort()))

@@ -22,6 +22,15 @@ set -euo pipefail
 CTX="${CTX:-teleport-dev-dev.aws.astrastreaming-datastax-us-east-2-dataplane}"
 KAFKA_BROKERS=(dev-kafka-0 dev-kafka-1 dev-kafka-2)
 KAFKA_LOOPBACK_IPS=(127.0.0.2 127.0.0.3 127.0.0.4)
+# Cassandra needs the same per-pod treatment as Kafka above, for the same reason: a single
+# svc/dev-cassandra-dc1-service forward only tunnels the initial contact. The driver then
+# discovers the other 2 nodes via system.peers using their real in-cluster pod IPs and tries to
+# open direct connections to those -- which aren't routable locally, producing a constant stream
+# of NotYetConnectedException retries and added latency on any query touching more than one
+# token range. PortForwardAddressTranslator (in the app) maps each pod's real IP to the matching
+# loopback alias below; reusing Kafka's 127.0.0.2/.3/.4 aliases is fine since the ports differ.
+CASSANDRA_PODS=(dev-cassandra-dc1-rack1-sts-0 dev-cassandra-dc1-rack1-sts-1 dev-cassandra-dc1-rack1-sts-2)
+CASSANDRA_LOOPBACK_IPS=(127.0.0.2 127.0.0.3 127.0.0.4)
 
 check_hosts_entries() {
     local missing=()
@@ -112,7 +121,9 @@ check_hosts_entries
 check_loopback_aliases
 
 echo "Starting port-forwards against $CTX..."
-start_port_forward cassandra svc/dev-cassandra-dc1-service 9042:9042 cassandra
+for i in "${!CASSANDRA_PODS[@]}"; do
+    start_port_forward cassandra "pod/${CASSANDRA_PODS[$i]}" 9042:9042 "cassandra-${i}" "${CASSANDRA_LOOPBACK_IPS[$i]}"
+done
 start_port_forward kafka svc/schema-registry 8080:8080 schema-registry
 start_port_forward kafka svc/kafka-connect 8083:8083 kafka-connect
 start_port_forward opensearch svc/opensearch-cluster-master 9200:9200 opensearch
@@ -124,7 +135,9 @@ for i in "${!KAFKA_BROKERS[@]}"; do
     start_port_forward kafka "pod/${KAFKA_BROKERS[$i]}" 9092:9092 "kafka-${i}" "${KAFKA_LOOPBACK_IPS[$i]}"
 done
 
-wait_for_port localhost 9042 Cassandra
+for i in "${!CASSANDRA_PODS[@]}"; do
+    wait_for_port "${CASSANDRA_LOOPBACK_IPS[$i]}" 9042 "Cassandra ${CASSANDRA_PODS[$i]}"
+done
 wait_for_port localhost 8080 "Schema registry"
 wait_for_port localhost 8083 "Kafka Connect"
 wait_for_port localhost 9200 OpenSearch

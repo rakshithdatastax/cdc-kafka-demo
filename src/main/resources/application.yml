@@ -3,7 +3,7 @@ server:
 
 demo:
   cassandra:
-    contact-point: localhost
+    contact-point: 127.0.0.2
     port: 9042
     local-datacenter: dc1
     keyspace: ks1
