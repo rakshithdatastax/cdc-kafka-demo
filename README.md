@@ -132,6 +132,18 @@ workflow, since they push to the same ECR repo:
 push to `main` that touches `loadgen/**`, or manually via the Actions tab
 ("Run workflow"). No local docker/podman push needed.
 
+**Event throughput generator** (`EventThroughputGenMain`): same jar, separate
+image. `loadgen/Dockerfile.eventthroughput` starts
+`com.example.loadgen.EventThroughputGenMain` instead of the jar's default
+`LoadGenMain`, and `.github/workflows/build-eventthroughput.yaml` builds and
+pushes `765730767431.dkr.ecr.us-east-2.amazonaws.com/datastax/cdc:eventthroughput`
+(plus an `eventthroughput-<sha>` tag) on the same triggers as above, so
+`:loadgen` is never touched. It is deployed as its own ArgoCD app
+(`releases/eventthroughput/dev/` in `streaming-dataplane-argocd`) and writes to
+`ks1.eventthroughput`. Configure it via `EVENTS_PER_SECOND`, `INSERT_PCT`,
+`DELETE_PCT`, `UPDATE_PCT`, `NUM_PKS`, `NUM_COLUMNS`, `MAX_IN_FLIGHT`,
+`MAX_CATCHUP_MS`.
+
 **Deploy**: a proper ArgoCD-managed Helm release in `streaming-dataplane-argocd`
 (`releases/loadgen/dev/`, registered in that repo's `templated-apps` and root
 `values.yaml` under the `cassandra` group, alongside `admin-pod`/`perf-test`)
