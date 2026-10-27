@@ -45,7 +45,7 @@ public class LoadGenMainV2 {
                 .withAuthProvider(new ProgrammaticPlainTextAuthProvider(config.username, config.password))
                 .build();
 
-        LoadGen loadGen = new LoadGen(session, config);
+        LoadGenV2 loadGen = new LoadGenV2(session, config);
         Thread runnerThread = Thread.currentThread();
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
@@ -216,7 +216,7 @@ public class LoadGenMainV2 {
         }
     }
 
-    public static class LoadGen {
+    public static class LoadGenV2 {
         enum OpType {
             INSERT, DELETE, UPDATE
         }
@@ -262,7 +262,7 @@ public class LoadGenMainV2 {
         private final AtomicLong blockedOnInFlightSinceLastLog = new AtomicLong(0);
         private final AtomicLong blockedTimeNanosSinceLastLog = new AtomicLong(0);
 
-        public LoadGen(CqlSession session, Config config) {
+        public LoadGenV2(CqlSession session, Config config) {
             this.session = session;
             this.config = config;
             this.inFlight = new Semaphore(config.maxInFlight);
