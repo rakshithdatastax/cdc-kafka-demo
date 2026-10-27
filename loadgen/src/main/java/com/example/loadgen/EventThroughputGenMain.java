@@ -104,7 +104,7 @@ public class EventThroughputGenMain {
             c.username = env("CASSANDRA_USERNAME", "dev-cassandra-superuser");
             c.password = requireEnv("CASSANDRA_PASSWORD");
             c.keyspace = env("KEYSPACE", "ks1");
-            c.table = env("TABLE", "loadgen");
+            c.table = env("TABLE", "eventthroughput");
             c.keyPrefix = env("KEY_PREFIX", UUID.randomUUID().toString().replace("-", "").substring(0, 8));
             c.replicationFactor = parseIntEnv("REPLICATION_FACTOR", "3");
             if (c.replicationFactor <= 0) {
