@@ -169,7 +169,8 @@ public class EventThroughputGenMain {
         public void print() {
             System.out.printf(
                     "[event-throughput-gen] contactPoint=%s:%d localDc=%s keyspace=%s table=%s keyPrefix=%s replicationFactor=%d initialRows=%d numColumns=%d maxInFlight=%d maxCatchup=%dms trackLiveKeys=%b%n"
-                            + "[event-throughput-gen] rate (n)=%.1f events/sec | insert (x)=%.1f%% (norm=%.2f%%) | delete (y)=%.1f%% (norm=%.2f%%) | update (z)=%.1f%% (norm=%.2f%%)%n",
+                            + "[event-throughput-gen] rate (n)=%.1f events/sec | insert (x)=%.1f%% (norm=%.2f%%) | delete (y)=%.1f%% (norm=%.2f%%) | update (z)=%.1f%% (norm=%.2f%%)%n"
+                            + "[event-throughput-gen] keyFormat=<prefix>-pk-<seq>-<t0EpochMs>%n",
                     contactPoint, port, localDc, keyspace, table, keyPrefix, replicationFactor, initialRows, numColumns, maxInFlight, maxCatchupMs, trackLiveKeys,
                     eventsPerSecond, insertPct, insertFraction * 100, deletePct, deleteFraction * 100, updatePct, updateFraction * 100);
             if (!trackLiveKeys) {
@@ -499,7 +500,8 @@ public class EventThroughputGenMain {
         }
 
         private OpType doInsert() {
-            String pk = config.keyPrefix + "-pk-" + keySequence.getAndIncrement();
+            // Key format: <prefix>-pk-<seq>-<t0EpochMs>
+            String pk = config.keyPrefix + "-pk-" + keySequence.getAndIncrement() + "-" + System.currentTimeMillis();
             Object[] values = new Object[1 + columnNames.size()];
             values[0] = pk;
             for (int col = 0; col < columnNames.size(); col++) {
