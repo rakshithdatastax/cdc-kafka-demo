@@ -3,9 +3,9 @@ name: Build and push cdclatency image
 on:
   push:
     branches:
-      - main
+      - AS-5585-calculate-latency-from-cassandra-to-event-topic-and-event-to-data-topic
     paths:
-      - 'loadgen/**'
+      - 'loadgen/src/main/java/com/example/loadgen/CdcLatencyMain.java'
       - '.github/workflows/build-cdclatency.yaml'
   workflow_dispatch: {}
 
