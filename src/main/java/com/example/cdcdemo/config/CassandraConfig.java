@@ -20,6 +20,9 @@ public class CassandraConfig {
         DemoProperties.Cassandra c = props.getCassandra();
         DriverConfigLoader configLoader = DriverConfigLoader.programmaticBuilder()
                 .withDuration(DefaultDriverOption.REQUEST_TIMEOUT, Duration.ofSeconds(15))
+                .withDuration(DefaultDriverOption.CONNECTION_CONNECT_TIMEOUT, Duration.ofSeconds(15))
+                .withDuration(DefaultDriverOption.CONTROL_CONNECTION_TIMEOUT, Duration.ofSeconds(15))
+                .withDuration(DefaultDriverOption.HEARTBEAT_TIMEOUT, Duration.ofSeconds(15))
                 .withString(DefaultDriverOption.ADDRESS_TRANSLATOR_CLASS, PortForwardAddressTranslator.class.getName())
                 .build();
         return CqlSession.builder()

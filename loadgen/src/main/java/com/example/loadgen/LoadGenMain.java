@@ -1,6 +1,7 @@
 package com.example.loadgen;
 
 import com.datastax.oss.driver.api.core.CqlSession;
+import com.datastax.oss.driver.api.core.DriverException;
 import com.datastax.oss.driver.api.core.auth.ProgrammaticPlainTextAuthProvider;
 import com.datastax.oss.driver.api.core.cql.PreparedStatement;
 import com.datastax.oss.driver.api.core.metadata.schema.ColumnMetadata;
@@ -115,6 +116,7 @@ public class LoadGenMain {
         private long totalAlters;
         private long totalDeletes;
         private long totalReinserts;
+        private long totalFailures;
         private int liveCount;
 
         LoadGen(CqlSession session, Config config) {
@@ -202,27 +204,30 @@ public class LoadGenMain {
             long opsSinceLastLog = 0;
 
             while (true) {
-                doScatterUpdate();
-                opsSinceLastLog++;
+                // A failed write (e.g. while a node restarts) is counted and skipped, like an
+                // application would, instead of ending the load for good.
+                if (tryOp(this::doScatterUpdate)) {
+                    opsSinceLastLog++;
+                }
 
                 long now = System.currentTimeMillis();
                 if (totalAlters < config.maxAlters && now >= nextAlterAt) {
-                    doAlter();
+                    tryOp(this::doAlter);
                     nextAlterAt = now + config.alterIntervalSeconds * 1000L;
                 }
                 if (liveCount > config.numPks * config.minLiveFraction && now >= nextDeleteAt) {
-                    doDeletes();
+                    tryOp(this::doDeletes);
                     nextDeleteAt = now + config.deleteIntervalSeconds * 1000L;
                 }
                 if (liveCount < config.numPks && now >= nextReinsertAt) {
-                    doReinserts();
+                    tryOp(this::doReinserts);
                     nextReinsertAt = now + config.reinsertIntervalSeconds * 1000L;
                 }
                 if (now >= nextLogAt) {
                     double actualUps = opsSinceLastLog / 10.0;
-                    System.out.printf("[loadgen] %s inserts=%d updates=%d alters=%d deletes=%d reinserts=%d live=%d columns=%d actualUps=%.1f%n",
+                    System.out.printf("[loadgen] %s inserts=%d updates=%d alters=%d deletes=%d reinserts=%d live=%d columns=%d failures=%d actualUps=%.1f%n",
                             Instant.now(), totalInserts, totalUpdates, totalAlters, totalDeletes, totalReinserts,
-                            liveCount, columnNames.size(), actualUps);
+                            liveCount, columnNames.size(), totalFailures, actualUps);
                     opsSinceLastLog = 0;
                     nextLogAt = now + 10_000L;
                 }
@@ -234,6 +239,18 @@ public class LoadGenMain {
                 } else {
                     nextTick = System.nanoTime();
                 }
+            }
+        }
+
+        private boolean tryOp(Runnable op) {
+            try {
+                op.run();
+                return true;
+            } catch (DriverException e) {
+                if (totalFailures++ % 100 == 0) {
+                    System.out.println("[loadgen] write failed (" + totalFailures + " so far): " + e);
+                }
+                return false;
             }
         }
 
